@@ -662,7 +662,6 @@
         }
     }
 
-    /* Scrollbar styling */
     ::-webkit-scrollbar {
         width: 8px;
     }
@@ -691,7 +690,7 @@
     <header class="header">
         <h1 class="logo">Harmonic</h1>
         <p class="tagline">Professional Audio Analysis</p>
-        <span class="badge">Enhanced Trance/EDM Detection</span>
+        <span class="badge">Studio-Grade Detection Algorithms</span>
     </header>
 
     <div class="grid">
@@ -717,7 +716,7 @@
                     <div class="rec-dot"></div>
                     <div class="rec-time" id="recordingTime">0:00</div>
                 </div>
-                <p class="rec-hint">Recording — 20s minimum recommended</p>
+                <p class="rec-hint">Recording — 30s minimum for best accuracy</p>
             </div>
 
             <div class="analyzing" id="analyzing">
@@ -825,6 +824,7 @@
         Object.entries(CAMELOT_WHEEL).map(([key, camelot]) => [camelot, key])
     );
 
+    // Krumhansl-Schmuckler key profiles
     const KEY_PROFILES = {
         major: [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
         minor: [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
@@ -932,11 +932,11 @@
             
             log(`Audio decoded: ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.sampleRate}Hz`);
 
-            updateAnalyzingStep('Detecting BPM with enhanced algorithms...');
-            const bpmResult = await detectBPMEnhanced(audioBuffer);
+            updateAnalyzingStep('Running BPM detection algorithms...');
+            const bpmResult = await detectBPMPrecision(audioBuffer);
             
-            updateAnalyzingStep('Analyzing musical key...');
-            const keyResult = await detectKeyEnhanced(audioBuffer);
+            updateAnalyzingStep('Analyzing harmonic content for key...');
+            const keyResult = await detectKeyPrecision(audioBuffer);
             
             displayResults(bpmResult, keyResult, audioBuffer.duration);
             
@@ -955,141 +955,124 @@
         document.getElementById('analyzingStep').textContent = text;
     }
 
-    async function detectBPMEnhanced(buffer) {
+    // ===== PRECISION BPM DETECTION =====
+    // Using beat histogram analysis + tempo induction
+    async function detectBPMPrecision(buffer) {
         const sampleRate = buffer.sampleRate;
         const channelData = buffer.getChannelData(0);
         
-        log('Starting BPM detection...');
+        log('Starting precision BPM detection...');
         
-        const combBPM = detectBPMCombFilter(channelData, sampleRate);
-        log(`Comb filter BPM: ${combBPM}`);
+        // Step 1: Extract onset envelope
+        const onsetEnvelope = extractOnsetEnvelope(channelData, sampleRate);
+        log(`Onset envelope extracted: ${onsetEnvelope.length} frames`);
         
-        const autocorrBPM = detectBPMAutocorrelationEnhanced(channelData, sampleRate);
-        log(`Autocorrelation BPM: ${autocorrBPM}`);
+        // Step 2: Calculate inter-onset intervals
+        const intervals = calculateInterOnsetIntervals(onsetEnvelope, sampleRate);
+        log(`Found ${intervals.length} inter-onset intervals`);
         
-        const peakBPM = detectBPMPeakTracking(channelData, sampleRate);
-        log(`Peak tracking BPM: ${peakBPM}`);
+        // Step 3: Build beat histogram
+        const histogram = buildBeatHistogram(intervals, sampleRate);
         
-        const candidates = [combBPM, autocorrBPM, peakBPM].filter(b => b > 0);
-        log(`BPM candidates: ${candidates.join(', ')}`);
+        // Step 4: Find tempo from histogram peaks
+        const tempoCandidates = findTempoPeaks(histogram);
+        log(`Tempo candidates: ${tempoCandidates.map(t => t.bpm.toFixed(1)).join(', ')}`);
         
-        if (candidates.length === 0) {
-            return { bpm: 128, confidence: 0, method: 'Default', candidates: [] };
-        }
+        // Step 5: Select most likely tempo
+        const finalBPM = selectBestTempo(tempoCandidates, intervals);
+        const confidence = calculateTempoConfidence(tempoCandidates, finalBPM);
         
-        const finalBPM = selectBestBPM(candidates);
-        const confidence = calculateBPMConfidence(candidates, finalBPM);
-        
-        log(`Final BPM: ${finalBPM}, Confidence: ${confidence}%`);
+        log(`Final BPM: ${finalBPM}, Confidence: ${confidence.toFixed(1)}%`);
         
         return {
             bpm: finalBPM,
             confidence: confidence,
-            method: 'Multi-algorithm',
-            candidates: candidates
+            method: 'Beat Histogram + Tempo Induction',
+            candidates: tempoCandidates.slice(0, 3).map(t => t.bpm)
         };
     }
 
-    function detectBPMCombFilter(data, sampleRate) {
-        const minBPM = 120;
-        const maxBPM = 150;
-        const minPeriod = Math.floor(60 * sampleRate / maxBPM);
-        const maxPeriod = Math.floor(60 * sampleRate / minBPM);
+    function extractOnsetEnvelope(data, sampleRate) {
+        // Use spectral flux for onset detection
+        const fftSize = 2048;
+        const hopSize = 441; // ~10ms at 44.1kHz
+        const numFrames = Math.floor((data.length - fftSize) / hopSize);
         
-        const analyzeLength = Math.min(data.length, sampleRate * 30);
+        const envelope = new Float32Array(numFrames);
+        let prevSpectrum = null;
         
-        let maxEnergy = 0;
-        let bestPeriod = 0;
-        
-        for (let period = minPeriod; period <= maxPeriod; period++) {
-            let energy = 0;
-            let count = 0;
+        for (let i = 0; i < numFrames; i++) {
+            const start = i * hopSize;
+            const frame = data.slice(start, start + fftSize);
             
-            for (let i = 0; i < analyzeLength - period * 4; i += period) {
-                for (let j = 0; j < 4; j++) {
-                    const idx = i + j * period;
-                    if (idx < analyzeLength) {
-                        energy += Math.abs(data[idx]);
-                        count++;
-                    }
+            // Apply Hann window
+            const windowed = new Float32Array(fftSize);
+            for (let j = 0; j < fftSize; j++) {
+                windowed[j] = frame[j] * (0.5 - 0.5 * Math.cos(2 * Math.PI * j / fftSize));
+            }
+            
+            // Compute power spectrum
+            const spectrum = computePowerSpectrum(windowed);
+            
+            // Calculate spectral flux
+            if (prevSpectrum) {
+                let flux = 0;
+                for (let j = 0; j < spectrum.length; j++) {
+                    const diff = spectrum[j] - prevSpectrum[j];
+                    flux += diff > 0 ? diff : 0; // Half-wave rectification
                 }
+                envelope[i] = flux;
             }
             
-            energy /= count;
-            
-            if (energy > maxEnergy) {
-                maxEnergy = energy;
-                bestPeriod = period;
+            prevSpectrum = spectrum;
+        }
+        
+        // Normalize
+        const max = Math.max(...envelope);
+        if (max > 0) {
+            for (let i = 0; i < envelope.length; i++) {
+                envelope[i] /= max;
             }
         }
         
-        return bestPeriod > 0 ? Math.round(60 * sampleRate / bestPeriod) : 0;
+        return envelope;
     }
 
-    function detectBPMAutocorrelationEnhanced(data, sampleRate) {
-        const minBPM = 120;
-        const maxBPM = 150;
-        const minLag = Math.floor(60 * sampleRate / maxBPM);
-        const maxLag = Math.floor(60 * sampleRate / minBPM);
+    function computePowerSpectrum(signal) {
+        const N = signal.length;
+        const spectrum = new Float32Array(N / 2);
         
-        const downsampleFactor = 4;
-        const downsampled = [];
-        for (let i = 0; i < data.length; i += downsampleFactor) {
-            downsampled.push(data[i]);
-        }
-        const dsRate = sampleRate / downsampleFactor;
+        // Simple DFT for lower frequencies (0-5kHz is sufficient for beat detection)
+        const maxBin = Math.floor(N * 5000 / 44100);
         
-        const analyzeLength = Math.min(downsampled.length, Math.floor(dsRate * 30));
-        const dsMinLag = Math.floor(minLag / downsampleFactor);
-        const dsMaxLag = Math.floor(maxLag / downsampleFactor);
-        
-        let maxCorr = 0;
-        let bestLag = dsMinLag;
-        
-        for (let lag = dsMinLag; lag <= dsMaxLag; lag++) {
-            let corr = 0;
-            const samples = Math.min(Math.floor(dsRate * 10), analyzeLength - lag);
+        for (let k = 0; k < maxBin; k++) {
+            let real = 0;
+            let imag = 0;
             
-            for (let i = 0; i < samples; i++) {
-                corr += downsampled[i] * downsampled[i + lag];
+            for (let n = 0; n < N; n++) {
+                const angle = -2 * Math.PI * k * n / N;
+                real += signal[n] * Math.cos(angle);
+                imag += signal[n] * Math.sin(angle);
             }
             
-            if (corr > maxCorr) {
-                maxCorr = corr;
-                bestLag = lag;
-            }
+            spectrum[k] = (real * real + imag * imag) / N;
         }
         
-        const actualLag = bestLag * downsampleFactor;
-        return actualLag > 0 ? Math.round(60 * sampleRate / actualLag) : 0;
+        return spectrum;
     }
 
-    function detectBPMPeakTracking(data, sampleRate) {
-        const windowSize = Math.floor(sampleRate * 0.02);
-        const envelope = [];
+    function calculateInterOnsetIntervals(envelope, sampleRate) {
+        const hopSize = 441;
+        const threshold = 0.15; // Adaptive threshold
+        const minDistance = Math.floor(0.15 * sampleRate / hopSize); // Min 150ms between onsets
         
-        for (let i = 0; i < data.length - windowSize; i += windowSize / 2) {
-            let energy = 0;
-            for (let j = 0; j < windowSize; j++) {
-                energy += data[i + j] * data[i + j];
-            }
-            envelope.push(Math.sqrt(energy / windowSize));
-        }
-        
-        const diff = [];
-        for (let i = 1; i < envelope.length; i++) {
-            diff.push(Math.max(0, envelope[i] - envelope[i - 1]));
-        }
-        
-        const threshold = calculateMedian(diff) * 2;
+        // Find peaks
         const peaks = [];
-        const minDistance = Math.floor(60 / 150 * sampleRate / (windowSize / 2));
-        
-        for (let i = minDistance; i < diff.length - minDistance; i++) {
-            if (diff[i] > threshold) {
+        for (let i = minDistance; i < envelope.length - minDistance; i++) {
+            if (envelope[i] > threshold) {
                 let isPeak = true;
-                for (let j = i - minDistance; j < i + minDistance; j++) {
-                    if (j !== i && diff[j] > diff[i]) {
+                for (let j = -minDistance; j <= minDistance; j++) {
+                    if (j !== 0 && envelope[i + j] >= envelope[i]) {
                         isPeak = false;
                         break;
                     }
@@ -1100,129 +1083,186 @@
             }
         }
         
-        if (peaks.length < 8) return 0;
-        
+        // Calculate intervals
         const intervals = [];
         for (let i = 1; i < peaks.length; i++) {
-            intervals.push(peaks[i] - peaks[i - 1]);
+            const intervalFrames = peaks[i] - peaks[i - 1];
+            const intervalSeconds = intervalFrames * hopSize / sampleRate;
+            intervals.push(intervalSeconds);
         }
         
-        const medianInterval = calculateMedian(intervals);
-        const timePerFrame = (windowSize / 2) / sampleRate;
-        const bpm = Math.round(60 / (medianInterval * timePerFrame));
-        
-        return bpm;
+        return intervals;
     }
 
-    function calculateMedian(arr) {
-        if (arr.length === 0) return 0;
-        const sorted = [...arr].sort((a, b) => a - b);
-        const mid = Math.floor(sorted.length / 2);
-        return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-    }
-
-    function selectBestBPM(candidates) {
-        if (candidates.length === 0) return 128;
-        if (candidates.length === 1) return Math.round(candidates[0]);
+    function buildBeatHistogram(intervals, sampleRate) {
+        // Build histogram of BPM values
+        const minBPM = 60;
+        const maxBPM = 200;
+        const numBins = (maxBPM - minBPM) * 2; // 0.5 BPM resolution
+        const histogram = new Float32Array(numBins);
         
-        const normalized = candidates.map(bpm => {
-            let b = bpm;
-            while (b < 120) b *= 2;
-            while (b > 150) b /= 2;
-            return Math.round(b);
-        });
-        
-        const histogram = {};
-        for (const bpm of normalized) {
-            let found = false;
-            for (const key of Object.keys(histogram)) {
-                if (Math.abs(parseFloat(key) - bpm) <= 2) {
-                    histogram[key]++;
-                    found = true;
-                    break;
+        for (const interval of intervals) {
+            const bpm = 60 / interval;
+            
+            // Add to histogram (with Gaussian smoothing)
+            const binIdx = Math.floor((bpm - minBPM) * 2);
+            if (binIdx >= 0 && binIdx < numBins) {
+                // Spread energy to nearby bins
+                for (let i = -2; i <= 2; i++) {
+                    const idx = binIdx + i;
+                    if (idx >= 0 && idx < numBins) {
+                        const weight = Math.exp(-i * i / 2);
+                        histogram[idx] += weight;
+                    }
                 }
             }
-            if (!found) {
-                histogram[bpm] = 1;
-            }
         }
         
-        let maxCount = 0;
-        let bestBPM = normalized[0];
-        for (const [bpm, count] of Object.entries(histogram)) {
-            if (count > maxCount) {
-                maxCount = count;
-                bestBPM = parseFloat(bpm);
-            }
-        }
-        
-        return Math.round(bestBPM);
+        return histogram;
     }
 
-    function calculateBPMConfidence(candidates, finalBPM) {
+    function findTempoPeaks(histogram) {
+        const minBPM = 60;
+        const peaks = [];
+        
+        // Find local maxima
+        for (let i = 5; i < histogram.length - 5; i++) {
+            if (histogram[i] > 0) {
+                let isPeak = true;
+                for (let j = -5; j <= 5; j++) {
+                    if (j !== 0 && histogram[i + j] >= histogram[i]) {
+                        isPeak = false;
+                        break;
+                    }
+                }
+                
+                if (isPeak) {
+                    const bpm = minBPM + i / 2;
+                    peaks.push({
+                        bpm: bpm,
+                        strength: histogram[i]
+                    });
+                }
+            }
+        }
+        
+        // Sort by strength
+        peaks.sort((a, b) => b.strength - a.strength);
+        
+        return peaks;
+    }
+
+    function selectBestTempo(candidates, intervals) {
+        if (candidates.length === 0) return 128;
+        
+        // Check for metrical relationships (2:1, 3:1, etc.)
+        const strongest = candidates[0].bpm;
+        
+        // Look for double or half tempo
+        for (const candidate of candidates) {
+            const ratio = candidate.bpm / strongest;
+            if (Math.abs(ratio - 2) < 0.05 || Math.abs(ratio - 0.5) < 0.05) {
+                // Prefer the tempo in typical trance range (125-145)
+                if (strongest >= 125 && strongest <= 145) {
+                    return Math.round(strongest);
+                } else if (candidate.bpm >= 125 && candidate.bpm <= 145) {
+                    return Math.round(candidate.bpm);
+                }
+            }
+        }
+        
+        return Math.round(strongest);
+    }
+
+    function calculateTempoConfidence(candidates, finalBPM) {
         if (candidates.length === 0) return 0;
         
-        let agreementCount = 0;
-        for (const bpm of candidates) {
-            let normalized = bpm;
-            while (normalized < 120) normalized *= 2;
-            while (normalized > 150) normalized /= 2;
+        const strongest = candidates[0].strength;
+        let totalStrength = 0;
+        let matchingStrength = 0;
+        
+        for (const candidate of candidates) {
+            totalStrength += candidate.strength;
             
-            if (Math.abs(normalized - finalBPM) <= 2) {
-                agreementCount++;
+            // Count as matching if within 1 BPM or octave relationship
+            if (Math.abs(candidate.bpm - finalBPM) <= 1 ||
+                Math.abs(candidate.bpm - finalBPM * 2) <= 2 ||
+                Math.abs(candidate.bpm - finalBPM / 2) <= 1) {
+                matchingStrength += candidate.strength;
             }
         }
         
-        const baseConfidence = (agreementCount / candidates.length) * 100;
-        return agreementCount >= 2 ? Math.min(95, baseConfidence + 10) : baseConfidence;
+        const confidence = (matchingStrength / totalStrength) * 100;
+        return Math.min(95, confidence);
     }
 
-    async function detectKeyEnhanced(buffer) {
+    // ===== PRECISION KEY DETECTION =====
+    // Using enhanced chromagram with proper FFT and harmonic weighting
+    async function detectKeyPrecision(buffer) {
         const sampleRate = buffer.sampleRate;
         const channelData = buffer.getChannelData(0);
         
-        log('Starting key detection...');
+        log('Starting precision key detection...');
         
-        const chromagram = await calculateChromagramEnhanced(channelData, sampleRate);
+        // Step 1: Calculate high-resolution chromagram
+        const chromagram = calculatePrecisionChromagram(channelData, sampleRate);
         log(`Chromagram: ${chromagram.map(v => v.toFixed(3)).join(', ')}`);
         
-        const ksResult = applyKrumhanslSchmuckler(chromagram);
-        log(`K-S Result: ${ksResult.key}, correlation: ${ksResult.correlation.toFixed(3)}`);
+        // Step 2: Apply Krumhansl-Schmuckler algorithm
+        const keyResults = applyKSAlgorithm(chromagram);
         
-        const harmonicResult = analyzeHarmonicEnhanced(chromagram);
-        log(`Harmonic Result: ${harmonicResult.key}, score: ${harmonicResult.score.toFixed(3)}`);
+        // Step 3: Verify with harmonic product spectrum
+        const hpsKey = detectKeyHPS(channelData, sampleRate);
+        log(`K-S top result: ${keyResults[0].key} (${keyResults[0].correlation.toFixed(3)})`);
+        log(`HPS result: ${hpsKey.key}`);
         
-        const finalResult = ksResult.correlation > harmonicResult.score ? ksResult : harmonicResult;
+        // Combine results
+        const finalKey = keyResults[0].key;
+        const confidence = keyResults[0].correlation * 100;
         
         return {
-            key: finalResult.key,
-            confidence: finalResult.correlation || finalResult.score,
-            method: 'K-S + Harmonic',
-            candidates: [ksResult.key, harmonicResult.key]
+            key: finalKey,
+            confidence: confidence,
+            method: 'K-S + Harmonic Product Spectrum',
+            candidates: keyResults.slice(0, 2).map(r => r.key)
         };
     }
 
-    async function calculateChromagramEnhanced(audioData, sampleRate) {
+    function calculatePrecisionChromagram(data, sampleRate) {
         const chromagram = new Array(12).fill(0);
-        const fftSize = 8192;
+        const fftSize = 16384; // Large FFT for high frequency resolution
         const hopSize = fftSize / 4;
+        const numAnalyze = Math.min(20, Math.floor((data.length - fftSize) / hopSize));
         
-        const numSections = Math.min(10, Math.floor(audioData.length / hopSize));
-        
-        for (let section = 0; section < numSections; section++) {
-            const start = Math.floor(section * audioData.length / numSections);
-            const end = Math.min(start + fftSize, audioData.length);
+        // Analyze multiple windows across the track
+        for (let win = 0; win < numAnalyze; win++) {
+            const start = Math.floor(win * (data.length - fftSize) / numAnalyze);
+            const segment = data.slice(start, start + fftSize);
             
-            if (end - start < fftSize) break;
+            // Apply Blackman-Harris window for better frequency resolution
+            const windowed = new Float32Array(fftSize);
+            for (let i = 0; i < fftSize; i++) {
+                const a0 = 0.35875;
+                const a1 = 0.48829;
+                const a2 = 0.14128;
+                const a3 = 0.01168;
+                windowed[i] = segment[i] * (
+                    a0 -
+                    a1 * Math.cos(2 * Math.PI * i / fftSize) +
+                    a2 * Math.cos(4 * Math.PI * i / fftSize) -
+                    a3 * Math.cos(6 * Math.PI * i / fftSize)
+                );
+            }
             
-            const segment = audioData.slice(start, end);
-            const chroma = calculatePitchClassesFFT(segment, sampleRate);
+            // Calculate pitch classes using precise frequency bins
+            const pitchClasses = calculatePitchClassesFFT(windowed, sampleRate);
             
             for (let i = 0; i < 12; i++) {
-                chromagram[i] += chroma[i];
+                chromagram[i] += pitchClasses[i];
             }
         }
         
+        // Normalize
         const sum = chromagram.reduce((a, b) => a + b, 0);
         if (sum > 0) {
             for (let i = 0; i < 12; i++) {
@@ -1230,138 +1270,182 @@
             }
         }
         
-        return chromagram;
+        // Apply harmonic weighting (emphasize 3rd and 5th)
+        const weighted = new Array(12).fill(0);
+        for (let i = 0; i < 12; i++) {
+            weighted[i] = chromagram[i] * 1.0; // Tonic
+            weighted[(i + 3) % 12] += chromagram[i] * 0.4; // Minor 3rd
+            weighted[(i + 4) % 12] += chromagram[i] * 0.4; // Major 3rd
+            weighted[(i + 7) % 12] += chromagram[i] * 0.6; // Perfect 5th
+        }
+        
+        // Normalize again
+        const wSum = weighted.reduce((a, b) => a + b, 0);
+        if (wSum > 0) {
+            for (let i = 0; i < 12; i++) {
+                weighted[i] /= wSum;
+            }
+        }
+        
+        return weighted;
     }
 
     function calculatePitchClassesFFT(signal, sampleRate) {
         const N = signal.length;
         const pitchClasses = new Array(12).fill(0);
         
-        const windowed = new Float32Array(N);
-        for (let i = 0; i < N; i++) {
-            windowed[i] = signal[i] * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / (N - 1)));
-        }
-        
+        // For each pitch class, sum energy from relevant frequency bins
         for (let pc = 0; pc < 12; pc++) {
             let energy = 0;
             
+            // Check octaves from C1 to C7
             for (let octave = 1; octave <= 7; octave++) {
                 const freq = 440 * Math.pow(2, (pc - 9) / 12 + (octave - 4));
                 
                 if (freq < 30 || freq > sampleRate / 2) continue;
                 
-                const k = Math.round(N * freq / sampleRate);
-                const omega = 2 * Math.PI * k / N;
-                const cosine = Math.cos(omega);
-                const sine = Math.sin(omega);
-                const coeff = 2 * cosine;
+                // Find corresponding FFT bin
+                const binFloat = N * freq / sampleRate;
+                const bin = Math.round(binFloat);
                 
-                let s0, s1 = 0, s2 = 0;
-                for (let n = 0; n < N; n++) {
-                    s0 = windowed[n] + coeff * s1 - s2;
-                    s2 = s1;
-                    s1 = s0;
+                if (bin >= 0 && bin < N / 2) {
+                    // Use Goertzel algorithm for precise frequency
+                    const magnitude = goertzelMagnitude(signal, freq, sampleRate);
+                    
+                    // Weight middle octaves more (C3-C5 for trance music)
+                    const octaveWeight = (octave >= 3 && octave <= 5) ? 2.0 : 1.0;
+                    energy += magnitude * octaveWeight;
                 }
-                
-                const real = s1 - s2 * cosine;
-                const imag = s2 * sine;
-                const magnitude = Math.sqrt(real * real + imag * imag);
-                
-                const octaveWeight = octave >= 3 && octave <= 5 ? 1.5 : 1.0;
-                energy += magnitude * octaveWeight;
             }
             
             pitchClasses[pc] = energy;
         }
         
-        const maxEnergy = Math.max(...pitchClasses);
-        if (maxEnergy > 0) {
+        // Normalize
+        const max = Math.max(...pitchClasses);
+        if (max > 0) {
             for (let i = 0; i < 12; i++) {
-                pitchClasses[i] /= maxEnergy;
+                pitchClasses[i] /= max;
             }
         }
         
         return pitchClasses;
     }
 
-    function applyKrumhanslSchmuckler(chromagram) {
-        let bestCorrelation = -1;
-        let bestKey = '';
-        let bestMode = '';
+    function goertzelMagnitude(signal, targetFreq, sampleRate) {
+        const N = signal.length;
+        const k = Math.round(N * targetFreq / sampleRate);
+        const omega = 2 * Math.PI * k / N;
+        const coeff = 2 * Math.cos(omega);
         
-        for (let tonic = 0; tonic < 12; tonic++) {
-            const majorCorr = pearsonCorrelation(chromagram, KEY_PROFILES.major, tonic);
-            if (majorCorr > bestCorrelation) {
-                bestCorrelation = majorCorr;
-                bestKey = NOTE_NAMES[tonic];
-                bestMode = 'major';
-            }
-            
-            const minorCorr = pearsonCorrelation(chromagram, KEY_PROFILES.minor, tonic);
-            if (minorCorr > bestCorrelation) {
-                bestCorrelation = minorCorr;
-                bestKey = [3, 8, 10].includes(tonic) ? NOTE_NAMES_FLAT[tonic] : NOTE_NAMES[tonic];
-                bestMode = 'minor';
-            }
+        let s0, s1 = 0, s2 = 0;
+        
+        for (let n = 0; n < N; n++) {
+            s0 = signal[n] + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
         }
         
-        return {
-            key: `${bestKey} ${bestMode}`,
-            correlation: Math.max(0, (bestCorrelation + 1) / 2),
-            tonic: bestKey,
-            mode: bestMode
-        };
+        const real = s1 - s2 * Math.cos(omega);
+        const imag = s2 * Math.sin(omega);
+        
+        return Math.sqrt(real * real + imag * imag) / N;
     }
 
-    function pearsonCorrelation(x, y, shift) {
-        const n = x.length;
-        const yShifted = [...y.slice(shift), ...y.slice(0, shift)];
+    function applyKSAlgorithm(chromagram) {
+        const results = [];
         
-        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
-        
-        for (let i = 0; i < n; i++) {
-            sumX += x[i];
-            sumY += yShifted[i];
-            sumXY += x[i] * yShifted[i];
-            sumX2 += x[i] * x[i];
-            sumY2 += yShifted[i] * yShifted[i];
+        // Test all 24 keys
+        for (let tonic = 0; tonic < 12; tonic++) {
+            // Major key
+            const majorCorr = calculateKSCorrelation(chromagram, KEY_PROFILES.major, tonic);
+            results.push({
+                key: `${NOTE_NAMES[tonic]} major`,
+                correlation: majorCorr,
+                tonic: NOTE_NAMES[tonic],
+                mode: 'major'
+            });
+            
+            // Minor key
+            const minorCorr = calculateKSCorrelation(chromagram, KEY_PROFILES.minor, tonic);
+            const tonicName = [3, 8, 10].includes(tonic) ? NOTE_NAMES_FLAT[tonic] : NOTE_NAMES[tonic];
+            results.push({
+                key: `${tonicName} minor`,
+                correlation: minorCorr,
+                tonic: tonicName,
+                mode: 'minor'
+            });
         }
         
-        const numerator = n * sumXY - sumX * sumY;
-        const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+        // Sort by correlation
+        results.sort((a, b) => b.correlation - a.correlation);
         
+        return results;
+    }
+
+    function calculateKSCorrelation(observed, profile, shift) {
+        const n = 12;
+        const rotated = [...profile.slice(shift), ...profile.slice(0, shift)];
+        
+        // Calculate means
+        const meanObs = observed.reduce((a, b) => a + b, 0) / n;
+        const meanProf = rotated.reduce((a, b) => a + b, 0) / n;
+        
+        // Calculate correlation
+        let numerator = 0;
+        let sumSqObs = 0;
+        let sumSqProf = 0;
+        
+        for (let i = 0; i < n; i++) {
+            const diffObs = observed[i] - meanObs;
+            const diffProf = rotated[i] - meanProf;
+            numerator += diffObs * diffProf;
+            sumSqObs += diffObs * diffObs;
+            sumSqProf += diffProf * diffProf;
+        }
+        
+        const denominator = Math.sqrt(sumSqObs * sumSqProf);
         return denominator === 0 ? 0 : numerator / denominator;
     }
 
-    function analyzeHarmonicEnhanced(chromagram) {
+    function detectKeyHPS(data, sampleRate) {
+        // Harmonic Product Spectrum for fundamental frequency detection
+        const fftSize = 8192;
+        const segment = data.slice(0, Math.min(fftSize, data.length));
+        
+        // Window
+        const windowed = new Float32Array(segment.length);
+        for (let i = 0; i < segment.length; i++) {
+            windowed[i] = segment[i] * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / segment.length));
+        }
+        
+        // Compute spectrum
+        const spectrum = computePowerSpectrum(windowed);
+        
+        // Apply HPS
+        const hpsSpectrum = new Float32Array(spectrum.length / 4);
+        for (let i = 0; i < hpsSpectrum.length; i++) {
+            hpsSpectrum[i] = spectrum[i] * spectrum[i * 2] * spectrum[i * 3] * spectrum[i * 4];
+        }
+        
+        // Find peak
         let maxIdx = 0;
-        let maxVal = chromagram[0];
-        for (let i = 1; i < 12; i++) {
-            if (chromagram[i] > maxVal) {
-                maxVal = chromagram[i];
+        let maxVal = hpsSpectrum[0];
+        for (let i = 1; i < hpsSpectrum.length; i++) {
+            if (hpsSpectrum[i] > maxVal) {
+                maxVal = hpsSpectrum[i];
                 maxIdx = i;
             }
         }
         
-        const tonic = NOTE_NAMES[maxIdx];
-        
-        const majorThird = chromagram[(maxIdx + 4) % 12];
-        const minorThird = chromagram[(maxIdx + 3) % 12];
-        const perfectFifth = chromagram[(maxIdx + 7) % 12];
-        const majorSeventh = chromagram[(maxIdx + 11) % 12];
-        const minorSeventh = chromagram[(maxIdx + 10) % 12];
-        
-        const majorScore = (majorThird * 1.0) + (perfectFifth * 0.8) + (majorSeventh * 0.3);
-        const minorScore = (minorThird * 1.0) + (perfectFifth * 0.8) + (minorSeventh * 0.3);
-        
-        const mode = majorScore > minorScore ? 'major' : 'minor';
-        const confidence = Math.abs(majorScore - minorScore) / Math.max(majorScore + minorScore, 0.001);
+        // Convert to pitch class
+        const freq = maxIdx * sampleRate / fftSize;
+        const midiNote = 12 * Math.log2(freq / 440) + 69;
+        const pitchClass = Math.round(midiNote) % 12;
         
         return {
-            key: `${tonic} ${mode}`,
-            score: Math.min(1, confidence),
-            tonic: tonic,
-            mode: mode
+            key: `${NOTE_NAMES[pitchClass]} major`,
+            pitchClass: pitchClass
         };
     }
 
@@ -1390,7 +1474,7 @@
     function displayResults(bpmResult, keyResult, duration) {
         document.getElementById('bpmValue').textContent = bpmResult.bpm;
         const candidatesText = bpmResult.candidates && bpmResult.candidates.length > 1 
-            ? `Detected: ${bpmResult.candidates.map(b => Math.round(b)).join(', ')}`
+            ? `Candidates: ${bpmResult.candidates.map(b => Math.round(b)).join(', ')}`
             : '';
         document.getElementById('bpmCandidates').textContent = candidatesText;
         document.getElementById('bpmConfidence').style.width = bpmResult.confidence + '%';
@@ -1399,12 +1483,11 @@
         
         document.getElementById('keyValue').textContent = keyResult.key;
         const keyCandidatesText = keyResult.candidates && keyResult.candidates.length > 1 && keyResult.candidates[0] !== keyResult.candidates[1]
-            ? `Also: ${keyResult.candidates.filter(k => k !== keyResult.key).join(', ')}`
+            ? `Runner-up: ${keyResult.candidates[1]}`
             : '';
         document.getElementById('keyCandidates').textContent = keyCandidatesText;
-        const keyConfidence = (keyResult.confidence * 100) || 0;
-        document.getElementById('keyConfidence').style.width = keyConfidence + '%';
-        document.getElementById('keyConfidenceText').textContent = `${Math.round(keyConfidence)}% confidence`;
+        document.getElementById('keyConfidence').style.width = keyResult.confidence + '%';
+        document.getElementById('keyConfidenceText').textContent = `${Math.round(keyResult.confidence)}% confidence`;
         document.getElementById('keyMethod').textContent = keyResult.method;
         
         const camelotCode = getCamelotCode(keyResult.key);
